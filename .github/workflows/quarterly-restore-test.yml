@@ -1,0 +1,79 @@
+name: Quarterly Restore Test
+
+on:
+  schedule:
+    - cron: '23 3 1 1,4,7,10 *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  restore-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Download the latest backup and check
+        env:
+          B: ${{ vars.BACKUP_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${B}"
+
+          # taking the most recent object by modification time
+          key=$(aws s3api list-objects-v2 \
+                  --bucket "$B" \
+                  --prefix "backups/" \
+                  --query 'reverse(sort_by(Contents,&LastModified))[:1].Key' \
+                  --output text)
+
+          if [[ -z "${key}" || "${key}" == "None" ]]; then
+            echo "::notice::В s3://$B/backups No backups - skip recovery check"
+            exit 0
+          fi
+
+          echo " download: s3://${B}/${key}"
+
+          echo "::group::Object metadata"
+          aws s3api head-object --bucket "$B" --key "$key" || true
+          echo "::endgroup::"
+
+          aws s3 cp "s3://$B/$key" backup.tgz
+
+          echo "::group::Checking the archive"
+          ls -l backup.tgz || true
+          file backup.tgz || true
+          if ! gzip -t backup.tgz 2>/dev/null; then
+            echo "::error::The downloaded object is not valid. (.tgz)."
+            echo "Check the backup job and permissions KMS (if used SSE-KMS required kms:Decrypt for the role)."
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::View content (first 50 entries)"
+          tar tzf backup.tgz | head -n 50 || true
+          echo "::endgroup::"
+
+          mkdir -p restore
+          tar xzf backup.tgz -C restore
+
+          # looking for workflow-files in typical locations (taking into account the possible root folder in the archive)
+          if find restore -type f \
+               \( -path '*/.github/workflows/*.yml' -o -path '*/.github/workflows/*.yaml' \
+                  -o -path '*/workflows/*.yml'      -o -path '*/workflows/*.yaml' \) \
+               | grep -q .; then
+            echo "✓ Files workflow found in backup"
+          else
+            echo "::error::no files found in the archive workflow (were expected */.github/workflows/*.yml|yaml или */workflows/*.yml|yaml)"
+            echo "Tree restore/:"
+            find restore -maxdepth 3 -type d -print | sed 's/^/  /'
+            exit 1
+          fi
+
+          echo "OK"

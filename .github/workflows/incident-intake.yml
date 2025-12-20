@@ -1,0 +1,91 @@
+name: Incident Intake (alerts → tickets)
+
+on:
+  workflow_run:
+    workflows: ["Security Framework Gates"]
+    types: [completed]
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: read   # access to Dependabot alerts
+
+jobs:
+  # P1: create incident if primary security-workflow fell/expired on time
+  open_incident_issue:
+    if: >
+      github.event_name == 'workflow_run' &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+       github.event.workflow_run.conclusion == 'timed_out')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create incident (failed Security Framework Gates)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GH_NO_UPDATE_NOTIFIER: "1"
+          GH_PROMPT_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          TITLE="INC: Security Framework Gates failed in ${REPO}"
+          BODY_FILE="$(mktemp)"
+          {
+            echo "# Auto-created incident"
+            echo
+            echo "**Workflow:** Security Framework Gates"
+            echo "**Run:** ${{ github.event.workflow_run.html_url }}"
+            echo "**Branch:** ${{ github.event.workflow_run.head_branch }}"
+            echo
+            echo "grouponcall"
+          } > "$BODY_FILE"
+          gh issue create -R "$REPO" --title "$TITLE" --body-file "$BODY_FILE" --label "incident,P1"
+
+  # P2: one "tracker" incident on open Dependabot alert’s
+  dependabot_to_incident:
+    if: github.event_name != 'workflow_run'   # scheduled/manual start
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create/refresh Dependabot incident
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          GH_NO_UPDATE_NOTIFIER: "1"
+          GH_PROMPT_DISABLED: "1"
+        run: |
+          set -euo pipefail
+
+          # Takeing exactly the number of open alerts. --silent + 2>/dev/null exclude
+          # the error body gets into the variable when 403/404 and etc.
+          OPEN=$(gh api -R "$REPO" \
+                 -H "Accept: application/vnd.github+json" \
+                 "/repos/${REPO}/dependabot/alerts?state=open&per_page=100" \
+                 --silent 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+
+          if [ "${OPEN:-0}" -eq 0 ]; then
+            echo "No open Dependabot alerts -> OK"
+            exit 0
+          fi
+
+          TITLE="INC: Dependabot alerts open in ${REPO}"
+          # looking for an existing incident tracker
+          NUM=$(gh issue list -R "$REPO" --state open --search "$TITLE in:title" \
+                 --json number -q '.[0].number' 2>/dev/null || echo "")
+
+          if [ -n "${NUM}" ] && [ "${NUM}" != "null" ]; then
+            gh issue comment -R "$REPO" "$NUM" --body "Still open: ${OPEN} alert(s)."
+          else
+            BODY_FILE="$(mktemp)"
+            {
+              echo "# Auto-created incident (Dependabot)"
+              echo
+              echo "Open alerts: **${OPEN}**"
+              echo "See: https://github.com/${REPO}/security/dependabot"
+              echo
+              echo "@group/oncall"
+            } > "$BODY_FILE"
+            gh issue create -R "$REPO" --title "$TITLE" --body-file "$BODY_FILE" \
+              --label "incident,P2,dependabot"
+          fi
