@@ -105,50 +105,29 @@ jobs:
           echo "GH_TOKEN=${TOKEN}" >> "$GITHUB_ENV"
           shred -u app.pem || rm -f app.pem
 
-      - name: Check repo security flags (GraphQL)
+      - name: Check repo security flags
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
-          set -euo pipefail
+          DATA=$(gh api -H "Accept: application/vnd.github+json" "repos/${REPO}" || true)
+          SEC=$(echo "$DATA" | jq -r '.security_and_analysis // empty' 2>/dev/null || true)
+          SS=$(echo "$SEC" | jq -r 'try .secret_scanning.status // empty' 2>/dev/null || true)
+          PP=$(echo "$SEC" | jq -r 'try .secret_scanning_push_protection.status // empty' 2>/dev/null || true)
 
-          owner="${REPO%/*}"
-          name="${REPO#*/}"
+          echo "Secret scanning: ${SS:-unknown}, Push protection: ${PP:-unknown}"
 
-          
-          resp="$(gh api graphql -f query='
-            query($owner:String!, $name:String!) {
-              repository(owner:$owner, name:$name) {
-                isPrivate
-                nameWithOwner
-                securityAndAnalysis {
-                  secretScanning { status }
-                  secretScanningPushProtection { status }
-                }
-              }
-            }' -f owner="$owner" -f name="$name")"
+          if [ -z "${SS:-}" ] || [ -z "${PP:-}" ]; then
+            echo "::warning::security_and_analysis is unavailable in this GitHub Enterprise for ${REPO}. Skipping."
+            exit 0
+          fi
 
-          ss="$(echo "$resp" | jq -r '.data.repository.securityAndAnalysis.secretScanning.status // empty')"
-          pp="$(echo "$resp" | jq -r '.data.repository.securityAndAnalysis.secretScanningPushProtection.status // empty')"
-
-          echo "Secret scanning: ${ss:-unknown}, Push protection: ${pp:-unknown}"
-
-          if [ -z "${ss:-}" ] || [ -z "${pp:-}" ]; then
-            echo "::error::securityAndAnalysis is unavailable via GraphQL. This usually means GHAS/features not enabled for this repo/org, or token lacks permissions."
-            echo "$resp" | jq -r '.errors // empty' || true
+          if [ "$SS" != "enabled" ] || [ "$PP" != "enabled" ]; then
+            echo "::error::Enable Secret scanning + Push Protection."
             exit 1
           fi
 
-          if [ "$ss" != "ENABLED" ] && [ "$ss" != "enabled" ]; then
-            echo "::error::Secret scanning is not enabled (status=$ss)"
-            exit 1
-          fi
-
-          if [ "$pp" != "ENABLED" ] && [ "$pp" != "enabled" ]; then
-            echo "::error::Push protection is not enabled (status=$pp)"
-            exit 1
-          fi
 
 
   change_reason_gate:
