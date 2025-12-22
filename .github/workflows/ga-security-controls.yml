@@ -105,26 +105,51 @@ jobs:
           echo "GH_TOKEN=${TOKEN}" >> "$GITHUB_ENV"
           shred -u app.pem || rm -f app.pem
 
-      - name: Check repo security flags
+      - name: Check repo security flags (GraphQL)
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          DATA=$(gh api -H "Accept: application/vnd.github+json" "repos/${REPO}")
-          SEC=$(echo "$DATA" | jq -r '.security_and_analysis // empty')
-          SS=$(echo "$SEC" | jq -r 'try .secret_scanning.status // empty')
-          PP=$(echo "$SEC" | jq -r 'try .secret_scanning_push_protection.status // empty')
-          echo "Secret scanning: ${SS:-unknown}, Push protection: ${PP:-unknown}"
-          if [ -z "${SS:-}" ] || [ -z "${PP:-}" ]; then
-            echo "::error::security_and_analysis is unavailable. Check App permissions and that features exist/enabled for the repo."
+
+          owner="${REPO%/*}"
+          name="${REPO#*/}"
+
+          
+          resp="$(gh api graphql -f query='
+            query($owner:String!, $name:String!) {
+              repository(owner:$owner, name:$name) {
+                isPrivate
+                nameWithOwner
+                securityAndAnalysis {
+                  secretScanning { status }
+                  secretScanningPushProtection { status }
+                }
+              }
+            }' -f owner="$owner" -f name="$name")"
+
+          ss="$(echo "$resp" | jq -r '.data.repository.securityAndAnalysis.secretScanning.status // empty')"
+          pp="$(echo "$resp" | jq -r '.data.repository.securityAndAnalysis.secretScanningPushProtection.status // empty')"
+
+          echo "Secret scanning: ${ss:-unknown}, Push protection: ${pp:-unknown}"
+
+          if [ -z "${ss:-}" ] || [ -z "${pp:-}" ]; then
+            echo "::error::securityAndAnalysis is unavailable via GraphQL. This usually means GHAS/features not enabled for this repo/org, or token lacks permissions."
+            echo "$resp" | jq -r '.errors // empty' || true
             exit 1
           fi
-          if [ "$SS" != "enabled" ] || [ "$PP" != "enabled" ]; then
-            echo "::error::Enable Secret scanning + Push Protection."
+
+          if [ "$ss" != "ENABLED" ] && [ "$ss" != "enabled" ]; then
+            echo "::error::Secret scanning is not enabled (status=$ss)"
             exit 1
           fi
+
+          if [ "$pp" != "ENABLED" ] && [ "$pp" != "enabled" ]; then
+            echo "::error::Push protection is not enabled (status=$pp)"
+            exit 1
+          fi
+
 
   change_reason_gate:
     name: Change-Reason Gate
