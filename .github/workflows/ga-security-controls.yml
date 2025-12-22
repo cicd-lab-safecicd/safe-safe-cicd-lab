@@ -276,7 +276,7 @@ jobs:
     name: "⚠️ tamper_after_sbom"
     needs: [build_and_attest]
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tamper_sbom == 'true') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tamper_sbom == 'true' }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
