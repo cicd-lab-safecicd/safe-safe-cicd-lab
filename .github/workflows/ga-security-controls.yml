@@ -785,18 +785,21 @@ jobs:
   rerun_guard:
     runs-on: ubuntu-latest
     steps:
-      - name: Block rerun without explicit approval (PR only)
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          ATTEMPT: ${{ github.run_attempt }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if [ "${ATTEMPT:-1}" -gt 1 ]; then
-            pr=$(jq -r .number "$GITHUB_EVENT_PATH")
-            labels=$(gh pr view "$pr" --json labels -q '.labels[].name' | tr '\n' ' ')
-            echo "$labels" | grep -q 'Re-Run-Approved' || true
-          fi
+    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+    - name: Block rerun without explicit approval (PR only)
+      if: ${{ github.event_name == 'pull_request' }}
+      env:
+        ATTEMPT: ${{ github.run_attempt }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        if [ "${ATTEMPT:-1}" -gt 1 ]; then
+          pr=$(jq -r .number "$GITHUB_EVENT_PATH")
+          labels=$(gh pr view "$pr" --json labels -q '.labels[].name' | tr '\n' ' ')
+          echo "$labels" | grep -q 'Re-Run-Approved'
+        fi
+
 
   prod_release_gate:
     needs: [access_recert_gate, build_and_attest, trust_store_guard, kms_sign_and_verify, sbom_enforce, verify_action_publishers]
