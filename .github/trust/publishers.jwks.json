@@ -1,8 +1,12 @@
 {
-  "kty": "RSA",
-  "kid": "AWS:arn:aws:kms:eu-central-1:359598898242:key/cda0bd51-62c7-4b8e-bece-bd740ffc024c",
-  "use": "sig",
-  "alg": "PS256",
-  "n": "s1py0eOng5pqdO-vtNxmX9rmvp-ZReLWjlkRCe6ltIi3JArR-tWE9GKSIZnVXEjPTJTkg1XBYdHTjXZC1ojWu-K0AhssryJlSj26ak5JQ2GfSmjqj1MRxNRa7PRx-Oih0G77HNjSui_tpkyQxiRXhCRtqXaDz7OlkC5T9cHn8_n_A4uK22WxWOe95PD9s_HovLWbfrpCSi0hhAOMdwxhDhngORlnSNATDedyTYm-xOkYBWc598n9-BDWGONDl82ZCCjC266vQyoshTQszYlUKz7PG_9Xa6AhT8WZq9T-qxqrAqZWuBrY5-aW7x0np-7ijCBtCK5qpRR7mNFdmhxWLw",
-  "e": "AQAB"
-} 
+  "keys": [
+    {
+      "kty": "RSA",
+      "kid": "AWS:arn:aws:kms:eu-central-1:359598898242:key/cda0bd51-62c7-4b8e-bece-bd740ffc024c",
+      "use": "sig",
+      "alg": "PS256",
+      "n": "s1py0eOng5pqdO-vtNxmX9rmvp-ZReLWjlkRCe6ltIi3JArR-tWE9GKSIZnVXEjPTJTkg1XBYdHTjXZC1ojWu-K0AhssryJlSj26ak5JQ2GfSmjqj1MRxNRa7PRx-Oih0G77HNjSui_tpkyQxiRXhCRtqXaDz7OlkC5T9cHn8_n_A4uK22WxWOe95PD9s_HovLWbfrpCSi0hhAOMdwxhDhngORlnSNATDedyTYm-xOkYBWc598n9-BDWGONDl82ZCCjC266vQyoshTQszYlUKz7PG_9Xa6AhT8WZq9T-qxqrAqZWuBrY5-aW7x0np-7ijCBtCK5qpRR7mNFdmhxWLw",
+      "e": "AQAB"
+    }
+  ]
+}
