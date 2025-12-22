@@ -131,7 +131,6 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     env:
-      ENFORCEMENT: ${{ env.ENFORCEMENT }}
       CHANGE_REASON_REGEX: ${{ vars.CHANGE_REASON_REGEX }}
       CHANGE_REASON_LABEL_REGEX: ${{ vars.CHANGE_REASON_LABEL_REGEX }}
     steps:
@@ -237,7 +236,6 @@ jobs:
       contents: read
       id-token: write
     env:
-      ENFORCEMENT: ${{ env.ENFORCEMENT }}
       BACKUP_BUCKET: ${{ vars.BACKUP_BUCKET }}
     steps:
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
