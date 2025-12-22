@@ -1055,8 +1055,10 @@ jobs:
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
         with:
           fetch-depth: 0
+
 
       - name: Compute changed files (no external actions)
         id: cf
