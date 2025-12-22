@@ -107,7 +107,7 @@ jobs:
 
       - name: Check repo security flags
         env:
-          GH_TOKEN: ${{ env.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
