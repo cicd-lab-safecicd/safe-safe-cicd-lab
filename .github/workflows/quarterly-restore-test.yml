@@ -2,7 +2,7 @@ name: Quarterly Restore Test
 
 on:
   schedule:
-    - cron: '23 3 1 1,4,7,10 *'
+    - cron: "0 9 * * *"
   workflow_dispatch:
 
 permissions:
