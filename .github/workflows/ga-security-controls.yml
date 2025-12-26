@@ -764,7 +764,7 @@ jobs:
             exit 1
           fi
 
-audit_streaming_guard:
+  audit_streaming_guard:
   if: ${{ vars.AUDIT_BUCKET != '' }}
   runs-on: ubuntu-latest
   permissions:
