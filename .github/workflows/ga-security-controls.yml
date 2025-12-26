@@ -842,7 +842,7 @@ jobs:
             echo "::error::Deploy allowed only from main/release/*/v*"; exit 1;; esac
 
   promote_to_prod:
-    needs: [prod_release_gate]
+    needs: [prod_release_gate, kms_sign_and_verify, build_and_attest]
     runs-on: ubuntu-latest
     environment:
       name: production
