@@ -835,6 +835,27 @@ jobs:
             echo "Retention OK (${days}d)"
           fi
 
+      - name: Saw audit objects in last 7d
+        env:
+          B: ${{ env.AUDIT_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in $(seq 0 6); do
+            p="$(date -u -d "-${i} day" +%Y/%m/%d)/"
+            c="$(aws s3api list-objects-v2 --bucket "$B" --prefix "$p" --max-keys 1 --query 'KeyCount' --output text 2>/dev/null || echo 0)"
+            if [ "${c:-0}" -gt 0 ]; then
+              ok=1
+              break
+            fi
+          done
+          if [ "$ok" -eq 1 ]; then
+            echo "Saw audit objects in last 7d"
+          else
+            echo "::warning::No audit objects found in last 7d in $B"
+          fi
+
       - name: Summarize recent audit objects (CI/CD categories)
         env:
           B: ${{ env.AUDIT_BUCKET }}
