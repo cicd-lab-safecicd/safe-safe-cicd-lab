@@ -763,11 +763,16 @@ jobs:
           fi
 
   audit_streaming_guard:
-    if: ${{ vars.AUDIT_BUCKET != '' }}
+    if: ${{ vars.AUDIT_BUCKET != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
+    env:
+      AUDIT_BUCKET: ${{ vars.AUDIT_BUCKET }}
+      MIN_AUDIT_RETENTION_DAYS: ${{ vars.MIN_AUDIT_RETENTION_DAYS }}
+      AUDIT_MAX_OBJECTS: ${{ vars.AUDIT_MAX_OBJECTS }}
+      AUDIT_SAMPLE_OBJECTS: ${{ vars.AUDIT_SAMPLE_OBJECTS }}
     steps:
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
         with:
@@ -776,17 +781,137 @@ jobs:
           role-duration-seconds: 900
           audience: sts.amazonaws.com
           role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Check bucket exists
         env:
-          B: ${{ vars.AUDIT_BUCKET }}
+          B: ${{ env.AUDIT_BUCKET }}
+        shell: bash
         run: |
           set -euo pipefail
           aws s3api head-bucket --bucket "$B" || { echo "::error::Bucket $B not found"; exit 1; }
+          region="$(aws s3api get-bucket-location --bucket "$B" --query 'LocationConstraint' --output text 2>/dev/null || echo '')"
+          [ "$region" = "None" ] && region="us-east-1"
+          jq -n \
+            --arg arn "arn:aws:s3:::${B}" \
+            --arg region "$region" \
+            --argjson ap false \
+            '{BucketArn:$arn, BucketRegion:$region, AccessPointAlias:$ap}'
+
+      - name: Lifecycle retention ≥30d
+        env:
+          B: ${{ env.AUDIT_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MIN="${MIN_AUDIT_RETENTION_DAYS:-30}"
+          MIN="${MIN:-30}"
+          days=0
+          ol="$(aws s3api get-object-lock-configuration --bucket "$B" 2>/dev/null || true)"
+          if [ -n "${ol:-}" ] && echo "$ol" | jq -e '.ObjectLockConfiguration.ObjectLockEnabled=="Enabled"' >/dev/null 2>&1; then
+            d="$(echo "$ol" | jq -r '(.ObjectLockConfiguration.Rule.DefaultRetention.Days // 0) | tonumber' 2>/dev/null || echo 0)"
+            y="$(echo "$ol" | jq -r '(.ObjectLockConfiguration.Rule.DefaultRetention.Years // 0) | tonumber' 2>/dev/null || echo 0)"
+            days=$(( d + (y * 365) ))
+          fi
+          if [ "${days:-0}" -le 0 ]; then
+            lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$B" 2>/dev/null || echo '')"
+            days="$(jq -r '
+              [
+                .Rules[]? | (
+                  (.Expiration.Days // 0),
+                  (.NoncurrentVersionExpiration.NoncurrentDays // 0)
+                )
+              ] | max // 0
+            ' <<<"$lc" 2>/dev/null || echo 0)"
+          fi
+          if [ "${days:-0}" -lt "${MIN:-30}" ]; then
+            msg="Retention too low (${days}d) for bucket $B (min=${MIN}d)"
+            if [ "${ENFORCEMENT:-warn}" = "block" ]; then
+              echo "::error::$msg"
+              exit 1
+            else
+              echo "::warning::$msg"
+            fi
+          else
+            echo "Retention OK (${days}d)"
+          fi
+
+      - name: Summarize recent audit objects (CI/CD categories)
+        env:
+          B: ${{ env.AUDIT_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAX="${AUDIT_MAX_OBJECTS:-2000}"
+          MAX="${MAX:-2000}"
+          SAMPLE="${AUDIT_SAMPLE_OBJECTS:-200}"
+          SAMPLE="${SAMPLE:-200}"
+
+          keys_json="$(aws s3api list-objects-v2 --bucket "$B" --max-items "$MAX" --query 'Contents[].[Key,LastModified]' --output json 2>/dev/null || echo '[]')"
+          [ "$(jq -r 'length' <<<"$keys_json")" -gt 0 ] || { echo "::notice::No objects found in $B"; exit 0; }
+
+          prefix="$(jq -r 'sort_by(.[1]) | last | .[0] | capture("^(?<p>.*\\/)[^\\/]+$").p // ""' <<<"$keys_json" 2>/dev/null || echo '')"
+          if [ -z "$prefix" ]; then
+            prefix=""
+          fi
+
+          objs="$(aws s3api list-objects-v2 --bucket "$B" --prefix "$prefix" --max-items "$SAMPLE" --query 'Contents[].Key' --output json 2>/dev/null || echo '[]')"
+          n="$(jq -r 'length' <<<"$objs")"
+          [ "$n" -gt 0 ] || { echo "::notice::No objects under prefix '$prefix'"; exit 0; }
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          count_total=0
+          declare -A cat
+          cat[workflows]=0
+          cat[artifact]=0
+          cat[repo]=0
+          cat[checks]=0
+          cat[environment]=0
+          cat[other]=0
+
+          i=0
+          while [ "$i" -lt "$n" ]; do
+            k="$(jq -r ".[$i]" <<<"$objs")"
+            aws s3 cp "s3://$B/$k" "$tmp/obj.json" >/dev/null 2>&1 || { i=$((i+1)); continue; }
+            a="$(jq -r '(.action // .eventName // "")' "$tmp/obj.json" 2>/dev/null || echo '')"
+            if [ -n "$a" ]; then
+              count_total=$((count_total+1))
+              if echo "$a" | grep -Eiq '(workflow|actions)'; then
+                cat[workflows]=$((cat[workflows]+1))
+              elif echo "$a" | grep -Eiq '(artifact)'; then
+                cat[artifact]=$((cat[artifact]+1))
+              elif echo "$a" | grep -Eiq '(repo|repository|branch|tag)'; then
+                cat[repo]=$((cat[repo]+1))
+              elif echo "$a" | grep -Eiq '(check|status)'; then
+                cat[checks]=$((cat[checks]+1))
+              elif echo "$a" | grep -Eiq '(environment|deployment)'; then
+                cat[environment]=$((cat[environment]+1))
+              else
+                cat[other]=$((cat[other]+1))
+              fi
+            fi
+            i=$((i+1))
+          done
+
+          echo "Found ${count_total} CI/CD audit events (workflows/artifact/repo/checks/environment)."
+          jq -n \
+            --arg bucket "$B" \
+            --arg prefix "$prefix" \
+            --argjson total "$count_total" \
+            --argjson workflows "${cat[workflows]}" \
+            --argjson artifact "${cat[artifact]}" \
+            --argjson repo "${cat[repo]}" \
+            --argjson checks "${cat[checks]}" \
+            --argjson environment "${cat[environment]}" \
+            --argjson other "${cat[other]}" \
+            '{bucket:$bucket,prefix:$prefix,total:$total,workflows:$workflows,artifact:$artifact,repo:$repo,checks:$checks,environment:$environment,other:$other}'
 
   rerun_guard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
       - name: Block rerun without explicit approval (PR only)
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -1090,6 +1215,7 @@ jobs:
           else
             echo "any_changed=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Validate action owners + pin to full SHA (WARN only)
         if: steps.cf.outputs.any_changed == 'true'
         shell: bash
@@ -1113,6 +1239,7 @@ jobs:
             done
           done < <(printf '%s\n' "${{ steps.cf.outputs.all_changed_files }}" | grep -E '^\.?github/workflows/.*\.ya?ml$' || true)
           [ $status -eq 0 ] || true
+
       - name: actionlint (download binary, WARN only)
         if: steps.cf.outputs.any_changed == 'true'
         continue-on-error: true
@@ -1124,6 +1251,7 @@ jobs:
           curl -fsSL "$url" -o /tmp/actionlint.tgz
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
           /tmp/actionlint -color -format '{{.File}}:{{.Line}}:{{.Col}}: {{.Kind}}: {{.Message}}'
+
       - name: Block artifact exfil when added
         if: steps.cf.outputs.any_changed == 'true'
         shell: bash
