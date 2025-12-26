@@ -835,6 +835,43 @@ jobs:
             echo "Retention OK (${days}d)"
           fi
 
+      - name: Lifecycle retention ≥ 90d
+        env:
+          B: ${{ env.AUDIT_BUCKET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MIN=90
+          days=0
+          ol="$(aws s3api get-object-lock-configuration --bucket "$B" 2>/dev/null || true)"
+          if [ -n "${ol:-}" ] && echo "$ol" | jq -e '.ObjectLockConfiguration.ObjectLockEnabled=="Enabled"' >/dev/null 2>&1; then
+            d="$(echo "$ol" | jq -r '(.ObjectLockConfiguration.Rule.DefaultRetention.Days // 0) | tonumber' 2>/dev/null || echo 0)"
+            y="$(echo "$ol" | jq -r '(.ObjectLockConfiguration.Rule.DefaultRetention.Years // 0) | tonumber' 2>/dev/null || echo 0)"
+            days=$(( d + (y * 365) ))
+          fi
+          if [ "${days:-0}" -le 0 ]; then
+            lc="$(aws s3api get-bucket-lifecycle-configuration --bucket "$B" 2>/dev/null || echo '')"
+            days="$(jq -r '
+              [
+                .Rules[]? | (
+                  (.Expiration.Days // 0),
+                  (.NoncurrentVersionExpiration.NoncurrentDays // 0)
+                )
+              ] | max // 0
+            ' <<<"$lc" 2>/dev/null || echo 0)"
+          fi
+          if [ "${days:-0}" -lt "${MIN:-90}" ]; then
+            msg="No lifecycle expiration >=90d on $B (days=${days:-0})"
+            if [ "${ENFORCEMENT:-warn}" = "block" ]; then
+              echo "::error::$msg"
+              exit 1
+            else
+              echo "::warning::$msg"
+            fi
+          else
+            echo "Retention OK (${days}d)"
+          fi
+
       - name: Saw audit objects in last 7d
         env:
           B: ${{ env.AUDIT_BUCKET }}
@@ -927,6 +964,7 @@ jobs:
             --argjson environment "${cat[environment]}" \
             --argjson other "${cat[other]}" \
             '{bucket:$bucket,prefix:$prefix,total:$total,workflows:$workflows,artifact:$artifact,repo:$repo,checks:$checks,environment:$environment,other:$other}'
+
 
   rerun_guard:
     runs-on: ubuntu-latest
