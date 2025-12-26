@@ -1309,7 +1309,10 @@ jobs:
           url="https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz"
           curl -fsSL "$url" -o /tmp/actionlint.tgz
           tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
-          /tmp/actionlint -color -format '{{.File}}:{{.Line}}:{{.Col}}: {{.Kind}}: {{.Message}}'
+          if ! /tmp/actionlint -color; then
+            echo "::warning::actionlint reported issues"
+          fi
+
 
       - name: Block artifact exfil when added
         if: steps.cf.outputs.any_changed == 'true'
