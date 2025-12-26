@@ -764,23 +764,26 @@ jobs:
             exit 1
           fi
 
-  audit_streaming_guard:
-    if: ${{ vars.AUDIT_BUCKET != '' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-          role-duration-seconds: 900
-          audience: sts.amazonaws.com
-          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Check bucket exists
-        env:
-          B: ${{ vars.AUDIT_BUCKET }}
-        run: |
-          set -euo pipefail
-          aws s3api head-bucket --bucket "$B" || { echo "::error::Bucket $B not found"; exit 1; }
+audit_streaming_guard:
+  if: ${{ vars.AUDIT_BUCKET != '' }}
+  runs-on: ubuntu-latest
+  permissions:
+    id-token: write
+    contents: read
+  steps:
+    - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+      with:
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-duration-seconds: 900
+        audience: sts.amazonaws.com
+        role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Check bucket exists
+      env:
+        B: ${{ vars.AUDIT_BUCKET }}
+      run: |
+        set -euo pipefail
+        aws s3api head-bucket --bucket "$B" || { echo "::error::Bucket $B not found"; exit 1; }
 
   rerun_guard:
     runs-on: ubuntu-latest
