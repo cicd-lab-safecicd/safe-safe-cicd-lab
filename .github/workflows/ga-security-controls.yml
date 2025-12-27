@@ -608,7 +608,7 @@ jobs:
            fi
           fi
 
-        echo "Trust-store signer check complete: ok=$ok revoked=$revoked skid=$SKID"  
+          echo "Trust-store signer check complete: ok=$ok revoked=$revoked skid=$SKID"  
  
  
  
