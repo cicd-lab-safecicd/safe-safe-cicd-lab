@@ -2,10 +2,10 @@ name: Security Framework Gates
 
 on:
   push:
-    branches: ["main", "release/*"]
+    branches: ["main", "release", "release/*"]
     tags: ["v*"]
   pull_request:
-    branches: ["main", "release/*"]
+    branches: ["main", "release", "release/*"]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
