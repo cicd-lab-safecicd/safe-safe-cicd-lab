@@ -1039,41 +1039,145 @@ jobs:
     needs: [access_recert_gate, build_and_attest, trust_store_guard, kms_sign_and_verify, sbom_enforce, verify_action_publishers]
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
-      - name: Load org trust-store (required in this job)
-        env:
-          ORG_TRUST_REPO: ${{ vars.ORG_TRUST_REPO }}
-          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .github/trust
-          SRC=""
-          if [ -n "${ORG_TRUST_REPO:-}" ]; then
-            if gh repo clone "$ORG_TRUST_REPO" _orgtrust -- -q; then
-              if [ -d _orgtrust/.github/trust ]; then
-                cp -a _orgtrust/.github/trust/. .github/trust/
-                SRC="org:${ORG_TRUST_REPO}"
-              fi
-            else
-              echo "::notice::gh clone failed (private repo or ORG_READ_TOKEN missing?)"
+    permissions:
+      contents: read
+      id-token: write
+  steps:
+    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+    - name: Load org trust-store (required in this job)
+      env:
+        ORG_TRUST_REPO: ${{ vars.ORG_TRUST_REPO }}
+        GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p .github/trust
+        SRC=""
+        if [ -n "${ORG_TRUST_REPO:-}" ]; then
+          if gh repo clone "$ORG_TRUST_REPO" _orgtrust -- -q; then
+            if [ -d _orgtrust/.github/trust ]; then
+              cp -a _orgtrust/.github/trust/. .github/trust/
+              SRC="org:${ORG_TRUST_REPO}"
             fi
+          else
+            echo "::notice::gh clone failed (private repo or ORG_READ_TOKEN missing?)"
           fi
-          if [ -z "$SRC" ] && [ -f ".github/trust/publishers.jwks.json" ]; then
-            SRC="local:.github/trust"
-          fi
-          if [ ! -f ".github/trust/publishers.jwks.json" ]; then
-            echo "::error::missing .github/trust/publishers.jwks.json. Set repo var ORG_TRUST_REPO and secret ORG_READ_TOKEN, or commit .github/trust/*."
+        fi
+        if [ -z "$SRC" ] && [ -f ".github/trust/publishers.jwks.json" ]; then
+          SRC="local:.github/trust"
+        fi
+        if [ ! -f ".github/trust/publishers.jwks.json" ]; then
+          echo "::error::missing .github/trust/publishers.jwks.json. Set repo var ORG_TRUST_REPO and secret ORG_READ_TOKEN, or commit .github/trust/*."
+          exit 1
+        fi
+        test -f .github/trust/allowed_signers.json || { echo "::error::missing .github/trust/allowed_signers.json"; exit 1; }
+        test -f .github/trust/revocations.json || echo '{"kids":[]}' > .github/trust/revocations.json
+        jq -e '.keys|length>0' .github/trust/publishers.jwks.json >/dev/null
+
+    - name: Enforce release-only refs
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${GITHUB_REF}" in refs/heads/main|refs/heads/release/*|refs/tags/v*) ;; *)
+          echo "::error::Deploy allowed only from main/release/*/v*"; exit 1;; esac
+
+    - name: Check key revocations (warn/block)
+      shell: bash
+      env:
+        ENF: ${{ env.ENFORCEMENT }}
+        AWS_KMS_KEY_ARN: ${{ vars.AWS_KMS_KEY_ARN }}
+        AWS_KMS_KEY_ID:  ${{ vars.AWS_KMS_KEY_ID }}
+      run: |
+        set -euo pipefail
+        if [ -n "${AWS_KMS_KEY_ARN:-}" ]; then
+          KID="AWS:${AWS_KMS_KEY_ARN}"
+        elif [ -n "${AWS_KMS_KEY_ID:-}" ]; then
+          KID="AWS:${AWS_KMS_KEY_ID}"
+        else
+          echo "::warning::No AWS_KMS_KEY_ARN/AWS_KMS_KEY_ID set -> skipping revocation check"
+          exit 0
+        fi
+
+        if jq -r '.kids[]?' .github/trust/revocations.json | grep -Fxq "$KID"; then
+          msg="Key revoked ($KID)"
+          if [ "${ENF:-warn}" = "block" ]; then
+            echo "::error::$msg"
             exit 1
+          else
+            echo "::warning::$msg"
           fi
-          test -f .github/trust/allowed_signers.json || { echo "::error::missing .github/trust/allowed_signers.json"; exit 1; }
-      - name: Enforce release-only refs
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${GITHUB_REF}" in refs/heads/main|refs/heads/release/*|refs/tags/v*) ;; *)
-            echo "::error::Deploy allowed only from main/release/*/v*"; exit 1;; esac
+        else
+          echo "KID not revoked"
+        fi
+
+    - name: Enforce signer present in JWKS (unknown -> block)
+      shell: bash
+      env:
+        AWS_KMS_KEY_ARN: ${{ vars.AWS_KMS_KEY_ARN }}
+        AWS_KMS_KEY_ID:  ${{ vars.AWS_KMS_KEY_ID }}
+      run: |
+        set -euo pipefail
+        if [ -n "${AWS_KMS_KEY_ARN:-}" ]; then
+          KID="AWS:${AWS_KMS_KEY_ARN}"
+        elif [ -n "${AWS_KMS_KEY_ID:-}" ]; then
+          KID="AWS:${AWS_KMS_KEY_ID}"
+        else
+          echo "::error::No AWS_KMS_KEY_ARN/AWS_KMS_KEY_ID set"
+          exit 1
+        fi
+
+        jq -e --arg k "$KID" '.keys[]? | select(.kid == $k)' .github/trust/publishers.jwks.json >/dev/null \
+          || { echo "::error::unknown signer $KID (not in .github/trust/publishers.jwks.json)"; exit 1; }
+
+    - name: Verify OIDC claims + allowed_signers (warn/block)
+      shell: bash
+      env:
+        ENF: ${{ env.ENFORCEMENT }}
+        EXPECT_REPO: ${{ github.repository }}
+        EXPECT_WF:   ${{ github.workflow_ref }}
+      run: |
+        set -euo pipefail
+
+        url="${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+        tok="${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+        if [ -z "$url" ] || [ -z "$tok" ]; then
+          echo "::error::OIDC env vars missing (need permissions: id-token: write)"
+          exit 1
+        fi
+
+        jwt="$(curl -fsSL -H "Authorization: Bearer $tok" "${url}&audience=sts.amazonaws.com" | jq -r '.value')"
+        [ -n "$jwt" ] && [ "$jwt" != "null" ] || { echo "::error::failed to fetch OIDC token"; exit 1; }
+
+        payload_b64="$(echo "$jwt" | cut -d. -f2)"
+        payload_json="$(python3 -c 'import sys,base64; b=sys.stdin.read().strip(); b+="="*(-len(b)%4); print(base64.urlsafe_b64decode(b).decode("utf-8"))' <<<"$payload_b64")"
+
+        repo_claim="$(echo "$payload_json" | jq -r '.repository // empty')"
+        ref_claim="$(echo "$payload_json" | jq -r '.ref // empty')"
+        wf_claim="$(echo "$payload_json" | jq -r '.job_workflow_ref // empty')"
+
+        if [ -n "$repo_claim" ] && [ "$repo_claim" != "$EXPECT_REPO" ]; then
+          echo "::error::OIDC repo mismatch (claim=$repo_claim expected=$EXPECT_REPO)"
+          exit 1
+        fi
+
+        if [ -n "$ref_claim" ] && ! echo "$ref_claim" | grep -Eq '^refs/(heads/(main|release/.*)|tags/v.*)$'; then
+          echo "::error::OIDC ref not allowed (claim=$ref_claim)"
+          exit 1
+        fi
+
+        wf="${wf_claim:-$EXPECT_WF}"
+        if ! jq -r '.[]?' .github/trust/allowed_signers.json | grep -Fxq "$wf"; then
+          msg="workflow not in allowed_signers (wf=$wf)"
+          if [ "${ENF:-warn}" = "block" ]; then
+            echo "::error::$msg"
+            exit 1
+          else
+            echo "::warning::$msg"
+          fi
+        else
+          echo "workflow allowed"
+
 
   promote_to_prod:
     needs: [prod_release_gate, kms_sign_and_verify, build_and_attest]
