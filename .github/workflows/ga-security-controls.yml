@@ -566,6 +566,53 @@ jobs:
             jq -r '.keys[].kid' .github/trust/publishers.jwks.json | grep -Fx "$K" >/dev/null || true
           fi
 
+      - name: Trust-store check for signer (warn/block)
+        shell: bash
+        env:
+          ENF: ${{ env.ENFORCEMENT }}          # warn / block
+          AWS_KMS_KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${AWS_KMS_KEY_ID:-}" ]; then
+            echo "::warning::vars.AWS_KMS_KEY_ID is empty — signer KID check skipped"
+            exit 0
+          fi
+
+          SKID="AWS:${AWS_KMS_KEY_ID}"
+
+          ok=0
+          if test -f .github/trust/publishers.jwks.json; then
+            jq -e --arg k "$SKID" '.keys[]? | select(.kid == $k)' .github/trust/publishers.jwks.json >/dev/null && ok=1 || true
+          fi
+
+          revoked=0
+          if test -f .github/trust/revocations.json; then
+           
+            jq -e --arg k "$SKID" '.kids[]? | select(. == $k)' .github/trust/revocations.json >/dev/null && revoked=1 || true
+          fi
+
+          if [ "$ok" -ne 1 ]; then
+            echo "::warning::Signer $SKID is NOT in .github/trust/publishers.jwks.json"
+            if [ "${ENF:-warn}" = "block" ]; then
+              echo "::error::Enforcement=block → failing"
+              exit 1
+           fi
+          fi
+
+          if [ "$revoked" -eq 1 ]; then
+            echo "::warning::Signer $SKID is REVOKED in .github/trust/revocations.json"
+            if [ "${ENF:-warn}" = "block" ]; then
+              echo "::error::Enforcement=block → failing"
+              exit 1
+           fi
+          fi
+
+        echo "Trust-store signer check complete: ok=$ok revoked=$revoked skid=$SKID"  
+ 
+ 
+ 
+ 
   access_recert_gate:
     runs-on: ubuntu-latest
     steps:
