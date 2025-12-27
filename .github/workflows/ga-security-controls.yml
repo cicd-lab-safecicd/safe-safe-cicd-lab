@@ -584,79 +584,100 @@ jobs:
           fi
 
   kms_sign_and_verify:
-    needs: [build_and_attest, trust_store_guard]
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: (light) egress log
-        shell: bash
-        run: |
-          echo "Open connections BEFORE:"; ss -tpn || true
-      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
-      - name: Decide if AWS steps are allowed for this ref
-        id: gate
-        shell: bash
-        run: |
-          case "${GITHUB_REF}" in
-            refs/heads/main|refs/heads/release/*|refs/tags/v*) echo "aws=yes"  >> "$GITHUB_OUTPUT" ;;
-            *)                                               echo "aws=no"   >> "$GITHUB_OUTPUT" ;;
-          esac
-      - name: Load org trust-store (for this job too)
-        if: steps.gate.outputs.aws == 'yes'
-        env:
-          ORG_TRUST_REPO: ${{ vars.ORG_TRUST_REPO }}
-          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .github/trust
-          if [ -n "${ORG_TRUST_REPO:-}" ] && gh repo clone "$ORG_TRUST_REPO" _orgtrust -- -q; then
-            test -d _orgtrust/.github/trust && cp -a _orgtrust/.github/trust/. .github/trust/ || true
-          fi
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: build
-      - name: Configure AWS (OIDC assume role)
-        if: steps.gate.outputs.aws == 'yes'
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-          role-duration-seconds: 900
-          audience: sts.amazonaws.com
-          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: KMS Sign artifact.txt (PS256)
-        if: steps.gate.outputs.aws == 'yes'
-        run: |
-          set -euo pipefail
-          aws kms sign --key-id "${{ vars.AWS_KMS_KEY_ID }}" \
-            --signing-algorithm RSASSA_PSS_SHA_256 --message-type RAW \
-            --message fileb://artifact.txt --query Signature --output text | base64 -d > artifact.sig
-      - name: Fetch public key & verify
-        if: steps.gate.outputs.aws == 'yes'
-        run: |
-          set -euo pipefail
-          aws kms get-public-key --key-id "${{ vars.AWS_KMS_KEY_ID }}" \
-            --query PublicKey --output text | base64 -d > aws-pub.der
-          openssl pkey -pubin -inform DER -in aws-pub.der -out aws-pub.pem
-          openssl dgst -sha256 -verify aws-pub.pem -signature artifact.sig \
-            -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:digest -sigopt rsa_mgf1_md:sha256 artifact.txt
-      - name: AWS steps skipped for this ref
-        if: steps.gate.outputs.aws != 'yes'
-        run: echo "::notice::Skipping AWS assume/sign (ref '${GITHUB_REF}' is not main/release/*/tags v*)"
-      - name: Save signing evidence
-        if: steps.gate.outputs.aws == 'yes'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: signing-evidence
-          path: |
-            artifact.txt
-            artifact.sig
-            aws-pub.pem
-            checksums.txt
+  needs: [build_and_attest, trust_store_guard]
+  runs-on: ubuntu-latest
+  continue-on-error: true
+  permissions:
+    id-token: write
+    contents: read
+  env:
+    AWS_ALLOWED: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/v') }}
+  steps:
+    - name: (light) egress log
+      shell: bash
+      run: |
+        echo "Open connections BEFORE:"; ss -tpn || true
+
+    - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+
+    - name: Load org trust-store (for this job too)
+      if: env.AWS_ALLOWED == 'true'
+      env:
+        ORG_TRUST_REPO: ${{ vars.ORG_TRUST_REPO }}
+        GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p .github/trust
+        if [ -n "${ORG_TRUST_REPO:-}" ] && gh repo clone "$ORG_TRUST_REPO" _orgtrust -- -q; then
+          test -d _orgtrust/.github/trust && cp -a _orgtrust/.github/trust/. .github/trust/ || true
+        fi
+
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: build
+
+    - name: Configure AWS (OIDC assume role)
+      if: env.AWS_ALLOWED == 'true'
+      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
+      with:
+        role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+        role-duration-seconds: 900
+        audience: sts.amazonaws.com
+        role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: KMS Sign artifact.txt (PS256)
+      if: env.AWS_ALLOWED == 'true'
+      run: |
+        set -euo pipefail
+        aws kms sign --key-id "${{ vars.AWS_KMS_KEY_ID }}" \
+          --signing-algorithm RSASSA_PSS_SHA_256 --message-type RAW \
+          --message fileb://artifact.txt --query Signature --output text | base64 -d > artifact.sig
+
+    - name: Fetch public key & verify
+      if: env.AWS_ALLOWED == 'true'
+      run: |
+        set -euo pipefail
+        aws kms get-public-key --key-id "${{ vars.AWS_KMS_KEY_ID }}" \
+          --query PublicKey --output text | base64 -d > aws-pub.der
+        openssl pkey -pubin -inform DER -in aws-pub.der -out aws-pub.pem
+        openssl dgst -sha256 -verify aws-pub.pem -signature artifact.sig \
+          -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:digest -sigopt rsa_mgf1_md:sha256 artifact.txt
+
+    - name: AWS steps skipped for this ref
+      if: env.AWS_ALLOWED != 'true'
+      run: echo "::notice::Skipping AWS assume/sign (ref '${GITHUB_REF}' is not main/release/*/tags v*)"
+
+    - name: Save signing evidence
+      if: env.AWS_ALLOWED == 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: signing-evidence
+        path: |
+          artifact.txt
+          artifact.sig
+          aws-pub.pem
+          checksums.txt
+
+sbom_enforce:
+  needs: [build_and_attest]
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: build
+    - name: Enforce SBOM digest (FAIL on mismatch)
+      shell: bash
+      run: |
+        set -euo pipefail
+        A=$(sha256sum artifact.txt | awk '{print $1}')
+        S=$(jq -r '.files[]?|select(.fileName=="artifact.txt")|.checksums[]?|select(.algorithm=="SHA256")|.checksumValue' sbom.spdx.json | head -n1)
+        if [ -z "$S" ] || [ "$A" != "$S" ]; then
+          echo "::error::SBOM mismatch/missing (artifact=$A, sbom=${S:-<none>})"
+          exit 1
+        fi
+
 
   sbom_enforce:
     needs: [build_and_attest]
