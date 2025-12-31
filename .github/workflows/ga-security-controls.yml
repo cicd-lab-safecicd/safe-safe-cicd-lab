@@ -1010,6 +1010,48 @@ jobs:
             --argjson other "${cat[other]}" \
             '{bucket:$bucket,prefix:$prefix,total:$total,workflows:$workflows,artifact:$artifact,repo:$repo,checks:$checks,environment:$environment,other:$other}'
 
+            
+
+  kms_required_gate:
+    name: kms_required_gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: KMS required gate
+        shell: bash
+        env:
+          KMS_KEY_ID: ${{ secrets.KMS_KEY_ID }}
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          set -euo pipefail
+
+          TARGET_BRANCH=""
+          IS_TAG="false"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" || "${GITHUB_EVENT_NAME}" == "pull_request_target" ]]; then
+            TARGET_BRANCH="${GITHUB_BASE_REF}"
+          else
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              IS_TAG="true"
+            elif [[ "${GITHUB_REF}" == refs/heads/* ]]; then
+              TARGET_BRANCH="${GITHUB_REF#refs/heads/}"
+            fi
+          fi
+
+          if [[ "${IS_TAG}" != "true" ]]; then
+            if [[ "${TARGET_BRANCH}" != "main" && ! "${TARGET_BRANCH}" =~ ^release/ ]]; then
+              echo "Not prod ref -> skip check"
+              exit 0
+            fi
+          fi
+
+          if [[ -z "${KMS_KEY_ID:-}" || -z "${AWS_ROLE_ARN:-}" || -z "${AWS_REGION:-}" ]]; then
+            echo "ERROR: KMS signing is required on main/release/tag"
+            exit 1
+          fi
+
+          echo "KMS requirement OK"
+
   rerun_guard:
     runs-on: ubuntu-latest
     steps:
