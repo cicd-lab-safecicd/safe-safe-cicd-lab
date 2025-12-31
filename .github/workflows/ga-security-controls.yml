@@ -1173,6 +1173,7 @@ jobs:
             echo "workflow allowed"
           fi
 
+
   promote_to_prod:
     needs: [prod_release_gate, kms_sign_and_verify, build_and_attest]
     runs-on: ubuntu-latest
