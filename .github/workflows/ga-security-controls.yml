@@ -742,6 +742,7 @@ jobs:
             [ ${PIPESTATUS[0]} -eq 0 ] && found=1
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
+          
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: _scan/artifacts
@@ -784,6 +785,13 @@ jobs:
           name: security-reports
           path: _reports/secrets_scan.txt
           if-no-files-found: ignore
+
+      - name: Fail if secrets found
+        if: steps.repo_scan.outputs.found == '1' || steps.art_scan.outputs.found == '1'
+        run: |
+          echo "Secrets detected. Failing."
+          exit 1
+
 
   permissions_gate:
     runs-on: ubuntu-latest
