@@ -703,6 +703,72 @@ jobs:
             aws-pub.pem
             checksums.txt
 
+  allowed_signers_gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+      - name: Load org trust-store (if set)
+        id: t
+        shell: bash
+        env:
+          ORG_TRUST_REPO: ${{ vars.ORG_TRUST_REPO }}
+          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p .github/trust
+          SRC=""
+          if [ -n "${ORG_TRUST_REPO:-}" ]; then
+            if gh repo clone "$ORG_TRUST_REPO" _orgtrust -- -q; then
+              if [ -d _orgtrust/.github/trust ]; then
+                cp -a _orgtrust/.github/trust/. .github/trust/
+                SRC="org:${ORG_TRUST_REPO}"
+              fi
+            else
+              echo "::notice::gh clone failed (private repo or GH_TOKEN missing?)"
+            fi
+          fi
+          if [ -z "$SRC" ] && [ -d ".github/trust" ]; then
+          SRC="local:.github/trust (already present)"
+          fi
+          echo "source=${SRC:-none}" >> "$GITHUB_OUTPUT"
+          ls -la .github/trust || true
+      - name: Allowed signers gate
+        shell: bash
+        env:
+          TRUST_DIR: .github/trust
+          KMS_KEY_ID: ${{ vars.AWS_KMS_KEY_ID }}
+          WF_FILE: .github/workflows/policy.yml
+        run: |
+          set -euo pipefail
+          test -f "$TRUST_DIR/publishers.jwks.json" || { echo "::error::missing publishers.jwks.json"; exit 1; }
+          test -f "$TRUST_DIR/allowed_signers.json" || { echo "::error::missing allowed_signers.json"; exit 1; }
+          [ -f "$TRUST_DIR/revocations.json" ] || echo '{"kids":[]}' > "$TRUST_DIR/revocations.json"
+          if [ -n "${KMS_KEY_ID:-}" ]; then
+            KID="AWS:${KMS_KEY_ID}"
+            if ! jq -e --arg k "$KID" '.keys[]? | select(.kid == $k)' "$TRUST_DIR/publishers.jwks.json" >/dev/null; then
+              echo "::warning::unknown signer $KID (org trust-store)"
+              exit 1
+            fi
+            if jq -e --arg k "$KID" '.kids[]? | select(. == $k)' "$TRUST_DIR/revocations.json" >/dev/null; then
+              echo "::warning::signer $KID revoked"
+              exit 1
+            fi
+          fi
+          PRJ="${GITHUB_REPOSITORY}"
+          if ! jq -r '.[]?' "$TRUST_DIR/allowed_signers.json" | grep -Fx "$PRJ/$WF_FILE" >/dev/null; then
+            echo "::warning::$PRJ/$WF_FILE not allowed in allowed_signers.json (org trust-store)"
+            exit 1
+          fi
+          echo "allowed_signers gate OK"
+
+
   sbom_enforce:
     needs: [build_and_attest]
     runs-on: ubuntu-latest
