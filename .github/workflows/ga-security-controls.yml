@@ -1010,6 +1010,83 @@ jobs:
             --argjson other "${cat[other]}" \
             '{bucket:$bucket,prefix:$prefix,total:$total,workflows:$workflows,artifact:$artifact,repo:$repo,checks:$checks,environment:$environment,other:$other}'
 
+  
+   
+  third_party_allowlist_guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Load org trust-store (if set)
+        id: t
+        shell: bash
+        env:
+          ORG_TRUST_REPO: ${{ vars.ORG_TRUST_REPO }}
+          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p .github/trust
+          SRC=""
+          if [ -n "${ORG_TRUST_REPO:-}" ]; then
+            if gh repo clone "$ORG_TRUST_REPO" _orgtrust -- -q; then
+              if [ -d _orgtrust/.github/trust ]; then
+                cp -a _orgtrust/.github/trust/. .github/trust/
+                SRC="org:${ORG_TRUST_REPO}"
+              fi
+            else
+              echo "::notice::gh clone failed (private repo or GH_TOKEN missing?)"
+            fi
+          fi
+          if [ -z "$SRC" ] && [ -d ".github/trust" ]; then
+            SRC="local:.github/trust (already present)"
+          fi
+          echo "source=${SRC:-none}" >> "$GITHUB_OUTPUT"
+          ls -la .github/trust || true
+
+      - name: Third-party allowlist guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ALLOW=".github/trust/third_party_allowlist.json"
+          if [ ! -f "$ALLOW" ]; then
+            echo "INFO: no allowlist — skip"
+            exit 0
+          fi
+
+          jq -e '.domains|length>=0' "$ALLOW" >/dev/null
+ 
+          found="$(
+            git grep -I -h -o -E 'https?://[A-Za-z0-9._:-]+' -- . ':(exclude)**/.github/trust/**' 2>/dev/null \
+              | cut -d/ -f3 | tr -d '\r' | sort -u
+          )"
+
+          found="$(printf '%s\n' "$found" \
+            | grep -E '^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' \
+            | grep -Ev '^(localhost|127\.0\.0\.1|0\.0\.0\.0)$' \
+            | sort -u || true)"
+
+          domains="$(jq -r '.domains[]' "$ALLOW" | tr -d '\r' | sort -u)"
+
+          for d in $found; do
+            printf '%s\n' "$domains" | grep -Fx "$d" >/dev/null || {
+              echo "ERROR: external domain not in allow-list: $d"
+              exit 1
+            }
+          done
+
+          echo "third-party allow-list OK"
+
+  
   rerun_guard:
     runs-on: ubuntu-latest
     steps:
